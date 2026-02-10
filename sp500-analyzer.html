@@ -611,8 +611,12 @@ function restoreState() {
   var first = SP_PRICE[0], last = SP_PRICE[SP_PRICE.length-1];
   var cpiCount = Object.keys(CPI_LOOKUP).length;
   var years = Math.round((last.ts - first.ts) / (365.25 * 86400000));
-  var desc = 'Pick any holding period and see how every possible S&P 500 investment performed across ' + SP_PRICE.length.toLocaleString() + ' trading days and ' + years + ' years of history, ' +
-    'from ' + fmtDate(first.date) + ' through ' + fmtDate(last.date) + '.';
+  var desc = 'Pick any holding period and see how every possible S&P 500 investment performed across ' +
+    SP_PRICE.length.toLocaleString() + ' trading days and ' + years + ' years of history, ' +
+    'from ' + fmtDate(first.date) + ' through ' + fmtDate(last.date) + '. ' +
+    'Toggle dividend reinvestment or adjust for inflation to compare real vs nominal returns. ' +
+    'Every scenario is a real historical window, not a simulation. ' +
+    'Try 1 year, 10 years, or 30 years to see how time in the market changes the odds.';
   document.getElementById('headerDesc').textContent = desc;
   restoreState();
   runAnalysis();
