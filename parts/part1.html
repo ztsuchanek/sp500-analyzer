@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S&P 500 Investment Period Analyzer</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #242836;
+    --border: #2e3344;
+    --text: #e4e6ed;
+    --text-dim: #8b8fa3;
+    --accent: #4f8ff7;
+    --green: #34d399;
+    --red: #f87171;
+    --gold: #fbbf24;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+
+  /* #14 Depth/layering: box-shadow system */
+  .header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 20px 32px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.3);
+    position: relative;
+    z-index: 10;
+  }
+  .header h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; margin-bottom: 6px; }
+  .header h1 span { color: var(--accent); }
+  .header-desc { font-size: 14px; color: var(--text-dim); line-height: 1.6; }
+  .container { max-width: 1200px; margin: 0 auto; padding: 24px 32px; }
+
+  /* #14 Depth on input section */
+  .input-section {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 24px; margin-bottom: 24px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+    text-align: center;
+  }
+  .input-section label {
+    display: block; font-size: 14px; font-weight: 600; margin-bottom: 12px;
+    color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .input-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: center; }
+  .input-row input[type="number"] {
+    background: var(--surface2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px 16px; color: var(--text); font-size: 18px; font-weight: 600;
+    width: 160px; outline: none; transition: border-color 0.2s;
+  }
+  .input-row input[type="number"]:focus { border-color: var(--accent); }
+  .input-row .unit { color: var(--text-dim); font-size: 14px; }
+.unit-toggle { display: flex; gap: 0; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); }
+  .unit-btn {
+    background: var(--surface2); border: none; padding: 10px 18px;
+    color: var(--text-dim); font-size: 14px; font-weight: 600; cursor: pointer;
+    transition: all 0.2s; border-right: 1px solid var(--border);
+  }
+  .unit-btn:last-child { border-right: none; }
+  .unit-btn:hover { color: var(--text); }
+  .unit-btn.active { background: var(--accent); color: #fff; }
+
+  /* Toggle row: dividend + inflation side by side */
+  .toggle-row {
+    display: flex; align-items: center; gap: 24px; margin-top: 12px; justify-content: center;
+  }
+  .toggle-group {
+    display: flex; align-items: center; gap: 10px;
+  }
+  .toggle-group .toggle-label {
+    font-size: 13px; color: var(--text-dim); font-weight: 600; line-height: 24px;
+  }
+  .toggle-switch {
+    position: relative; display: block; width: 44px; min-width: 44px; height: 24px; cursor: pointer;
+    flex-shrink: 0;
+  }
+  .toggle-switch input { opacity: 0; width: 0; height: 0; }
+  .toggle-slider {
+    position: absolute; inset: 0; background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 12px; transition: all 0.2s;
+  }
+  .toggle-slider:before {
+    content: ''; position: absolute; height: 18px; width: 18px;
+    left: 2px; bottom: 2px; background: var(--text-dim);
+    border-radius: 50%; transition: all 0.2s;
+  }
+  .toggle-switch input:checked + .toggle-slider { background: var(--accent); border-color: var(--accent); }
+  .toggle-switch input:checked + .toggle-slider:before { transform: translateX(20px); background: #fff; }
+  .toggle-note {
+    font-size: 11px; color: var(--text-dim); opacity: 0.7; margin-left: 4px;
+  }
+
+  /* #28 Educational tooltips */
+  .help-tip {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 16px; height: 16px; border-radius: 50%;
+    background: var(--surface2); border: 1px solid var(--border);
+    font-size: 10px; color: var(--text-dim); cursor: help;
+    position: relative; margin-left: 4px; vertical-align: middle;
+    font-weight: 700; line-height: 1;
+  }
+  .help-tip .tip-text {
+    display: none; position: absolute; bottom: calc(100% + 8px); left: 50%;
+    transform: translateX(-50%); width: 260px; padding: 10px 12px;
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 8px; font-size: 12px; color: var(--text-dim);
+    font-weight: 400; line-height: 1.5; text-align: left; z-index: 100;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4); pointer-events: none;
+  }
+  .help-tip .tip-text::after {
+    content: ''; position: absolute; top: 100%; left: 50%; transform: translateX(-50%);
+    border: 6px solid transparent; border-top-color: var(--border);
+  }
+  .help-tip:hover .tip-text { display: block; }
+
+  .results { display: none; }
+  /* #25 Entry animation */
+  .results.visible { display: block; animation: fadeSlideIn 0.35s ease-out; }
+  @keyframes fadeSlideIn {
+    from { opacity: 0; transform: translateY(12px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .results-header {
+    display: flex; align-items: baseline; justify-content: space-between;
+    margin-bottom: 16px; flex-wrap: wrap; gap: 8px;
+  }
+  .results-header h2 { font-size: 18px; font-weight: 700; }
+  .results-header .scenario-count { font-size: 13px; color: var(--text-dim); }
+
+  /* #8 Card hierarchy: hero cards for avg/median, standard for rest */
+  .hero-grid {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 16px; margin-bottom: 16px;
+  }
+  .stat-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 18px 20px; text-align: center;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    transition: box-shadow 0.2s;
+  }
+  .stat-card:hover { box-shadow: 0 4px 16px rgba(0,0,0,0.25); }
+  .stat-card.hero {
+    padding: 24px; border-width: 2px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.25);
+  }
+  /* #20 Sentence case for stat labels */
+  .stat-card .stat-label {
+    font-size: 12px; color: var(--text-dim);
+    letter-spacing: 0.3px; margin-bottom: 6px; font-weight: 600;
+  }
+  .stat-card.hero .stat-label { font-size: 13px; }
+  .stat-card .stat-value { font-size: 26px; font-weight: 700; letter-spacing: -0.5px; }
+  .stat-card.hero .stat-value { font-size: 32px; }
+  .stat-card .stat-sub { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
+  .cagr-sub {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 14px; margin-top: 12px;
+    display: none;
+  }
+  .cagr-sub.visible { display: block; }
+  .cagr-sub .cagr-label {
+    font-size: 11px; color: var(--text-dim);
+    letter-spacing: 0.5px; margin-bottom: 4px; font-weight: 600;
+  }
+  .cagr-sub .cagr-value { font-size: 20px; font-weight: 700; letter-spacing: -0.3px; }
+  .positive { color: var(--green); }
+  .negative { color: var(--red); }
+  .neutral { color: var(--accent); }
+
+  .winloss-bar-container {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 18px 20px; margin-bottom: 24px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  }
+  .winloss-bar-container .stat-label {
+    font-size: 12px; color: var(--text-dim);
+    letter-spacing: 0.3px; margin-bottom: 10px; font-weight: 600;
+  }
+  .winloss-bar { display: flex; height: 36px; border-radius: 6px; overflow: hidden; }
+  .winloss-bar .win-segment {
+    background: var(--green); display: flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 700; color: #0f1117; transition: width 0.5s ease;
+  }
+  .winloss-bar .loss-segment {
+    background: var(--red); display: flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 700; color: #0f1117; transition: width 0.5s ease;
+  }
+  .winloss-labels {
+    display: flex; justify-content: space-between; margin-top: 6px;
+    font-size: 12px; color: var(--text-dim);
+  }
+  .histogram-section {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 20px; margin-bottom: 24px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  }
+  .histogram-section h3 {
+    font-size: 14px; font-weight: 600; margin-bottom: 16px;
+    color: var(--text-dim); letter-spacing: 0.3px;
+  }
+  /* #13 Interactive histogram: tooltip overlay */
+  .histogram-canvas-container { position: relative; width: 100%; height: 260px; }
+  .histogram-canvas-container canvas { width: 100%; height: 100%; cursor: crosshair; }
+  .hist-tooltip {
+    display: none; position: absolute; padding: 8px 12px;
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 6px; font-size: 12px; color: var(--text);
+    pointer-events: none; z-index: 50; white-space: nowrap;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  }
+  .hist-tooltip.visible { display: block; }
+
+  .stats-grid {
+    display: grid; grid-template-columns: 1fr;
+    gap: 16px; margin-bottom: 16px;
+  }
+
+  /* Threshold slider card */
+  .threshold-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 18px 20px; margin-bottom: 24px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  }
+  .threshold-card .stat-label {
+    font-size: 12px; color: var(--text-dim);
+    letter-spacing: 0.3px; margin-bottom: 12px; font-weight: 600;
+  }
+  .threshold-controls {
+    position: relative; margin-bottom: 14px; padding-top: 32px;
+  }
+  .threshold-controls input[type="range"] {
+    width: 100%; height: 6px; -webkit-appearance: none; appearance: none;
+    background: var(--surface2); border-radius: 3px; outline: none;
+    border: 1px solid var(--border);
+  }
+  .threshold-controls input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 20px; height: 20px; border-radius: 50%;
+    background: var(--accent); cursor: pointer;
+    border: 2px solid #fff; box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+  }
+  .threshold-controls input[type="range"]::-moz-range-thumb {
+    width: 20px; height: 20px; border-radius: 50%;
+    background: var(--accent); cursor: pointer;
+    border: 2px solid #fff; box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+  }
+  .threshold-value {
+    position: absolute; top: 0; font-size: 18px; font-weight: 700;
+    color: var(--accent); white-space: nowrap;
+    transform: translateX(-50%); pointer-events: none;
+  }
+
+  .extremes-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 24px;
+  }
+  .extreme-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 18px 20px; text-align: center;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  }
+  .extreme-card h4 {
+    font-size: 12px; color: var(--text-dim);
+    letter-spacing: 0.3px; margin-bottom: 8px; font-weight: 600;
+  }
+  .extreme-card .extreme-return { font-size: 28px; font-weight: 700; margin-bottom: 4px; }
+  .extreme-card .extreme-dates { font-size: 13px; color: var(--text-dim); }
+  .extreme-card .extreme-prices { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
+  .percentile-section {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 20px; margin-bottom: 24px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  }
+  .percentile-section h3 {
+    font-size: 14px; font-weight: 600; margin-bottom: 14px;
+    color: var(--text-dim); letter-spacing: 0.3px;
+  }
+  .percentile-table { width: 100%; border-collapse: collapse; }
+  .percentile-table th, .percentile-table td {
+    padding: 8px 12px; text-align: left; font-size: 13px; border-bottom: 1px solid var(--border);
+  }
+  .percentile-table th { color: var(--text-dim); font-weight: 600; font-size: 11px; text-transform: uppercase; }
+  .percentile-table td:last-child { text-align: right; font-weight: 600; font-family: 'SF Mono', 'Fira Code', monospace; }
+  .footer {
+    text-align: center; padding: 24px; color: var(--text-dim); font-size: 12px;
+    border-top: 1px solid var(--border); margin-top: 24px;
+  }
+  .warning-card {
+    display: none;
+    background: rgba(251, 191, 36, 0.08);
+    border: 1px solid rgba(251, 191, 36, 0.3);
+    border-radius: 10px;
+    padding: 16px 20px;
+    margin-bottom: 24px;
+    text-align: center;
+  }
+  .warning-card.visible { display: block; }
+  .warning-card .warning-icon {
+    font-size: 20px;
+    margin-bottom: 6px;
+    color: var(--gold);
+  }
+  .warning-card .warning-title {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--gold);
+    margin-bottom: 4px;
+  }
+  .warning-card .warning-text {
+    font-size: 13px;
+    color: var(--text-dim);
+    line-height: 1.5;
+  }
+
+  /* #7 Responsive breakpoints */
+  @media (max-width: 1024px) {
+    .container { padding: 20px 24px; }
+  }
+  @media (max-width: 768px) {
+    .header { padding: 16px 20px; }
+    .header h1 { font-size: 18px; }
+    .container { padding: 16px; }
+    .input-section { padding: 18px; }
+    .hero-grid { grid-template-columns: 1fr; }
+    .stat-card.hero .stat-value { font-size: 28px; }
+    .toggle-row { flex-wrap: wrap; }
+    .help-tip .tip-text { width: 200px; left: auto; right: -8px; transform: none; }
+    .help-tip .tip-text::after { left: auto; right: 12px; }
+  }
+  @media (max-width: 480px) {
+    .header h1 { font-size: 16px; }
+    .header-meta { font-size: 11px; }
+    .container { padding: 12px; }
+    .input-row { flex-direction: column; align-items: stretch; }
+    .input-row input[type="number"] { width: 100%; }
+    .unit-toggle { justify-content: stretch; }
+    .unit-btn { flex: 1; padding: 10px 8px; font-size: 12px; text-align: center; }
+    .extremes-grid { grid-template-columns: 1fr; }
+.stat-card .stat-value { font-size: 22px; }
+    .extreme-card .extreme-return { font-size: 22px; }
+  }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1><span>S&P 500</span> Investment Period Analyzer</h1>
+  <div class="header-desc" id="headerDesc">Loading...</div>
+</div>
+<div class="container">
+  <div class="input-section">
+    <label>Investment Holding Period</label>
+    <div class="input-row">
+      <input type="number" id="daysInput" min="1" max="36500" value="1" placeholder="1">
+      <div class="unit-toggle">
+        <button class="unit-btn" data-unit="days" onclick="setUnit('days')">Days</button>
+        <button class="unit-btn" data-unit="weeks" onclick="setUnit('weeks')">Weeks</button>
+        <button class="unit-btn" data-unit="months" onclick="setUnit('months')">Months</button>
+        <button class="unit-btn active" data-unit="years" onclick="setUnit('years')">Years</button>
+      </div>
+    </div>
+    <!-- #2 Inflation toggle alongside dividend toggle -->
+    <div class="toggle-row">
+      <div class="toggle-group">
+        <label class="toggle-switch">
+          <input type="checkbox" id="dividendToggle" onchange="runAnalysis()">
+          <span class="toggle-slider"></span>
+        </label>
+        <span class="toggle-label">Include Dividends</span>
+        <span class="help-tip">?<span class="tip-text">Uses the S&amp;P 500 Total Return Index which assumes all dividends are reinvested. Post-1988 uses actual TR index data. Pre-1988 is estimated by accumulating historical dividend yields and reinvesting them as a lump sum every quarter (63 trading days), matching typical S&amp;P 500 payout schedules.</span></span>
+      </div>
+      <div class="toggle-group">
+        <label class="toggle-switch">
+          <input type="checkbox" id="inflationToggle" onchange="runAnalysis()">
+          <span class="toggle-slider"></span>
+        </label>
+        <span class="toggle-label">Adjust for Inflation</span>
+        <span class="help-tip">?<span class="tip-text">Converts nominal returns to real (inflation-adjusted) returns using the CPI-U index from the Bureau of Labor Statistics. Shows purchasing-power growth rather than dollar growth.</span></span>
+      </div>
+    </div>
+  </div>
+  <div class="warning-card" id="warningCard">
+    <div class="warning-icon">&#9888;</div>
+    <div class="warning-title" id="warningTitle">Insufficient Data</div>
+    <div class="warning-text" id="warningText">No valid scenarios found for this holding period. The period may exceed the available data range (~97 years). Try a shorter holding period.</div>
+  </div>
+  <div class="results" id="results">
+    <div class="results-header">
+      <h2 id="resultsTitle">Results</h2>
+      <div class="scenario-count" id="scenarioCount"></div>
+    </div>
+    <!-- #8 Hero grid for avg/median -->
+    <div class="hero-grid">
+      <div class="stat-card hero">
+        <div class="stat-label">Average Return<span class="help-tip">?<span class="tip-text">The arithmetic mean of all scenario returns. Each scenario starts on a different trading day across the full history.</span></span></div>
+        <div class="stat-value" id="avgReturn">--</div>
+        <div class="cagr-sub" id="avgCagrCard">
+          <div class="cagr-label">Annualized Return<span class="help-tip">?<span class="tip-text">Compound Annual Growth Rate (CAGR). The annualized return that would produce the same total return if compounded each year.</span></span></div>
+          <div class="cagr-value" id="avgCagr">--</div>
+        </div>
+      </div>
+      <div class="stat-card hero">
+        <div class="stat-label">Median Return<span class="help-tip">?<span class="tip-text">The middle value when all scenario returns are sorted. Less sensitive to extreme outliers than the average.</span></span></div>
+        <div class="stat-value" id="medReturn">--</div>
+        <div class="cagr-sub" id="medCagrCard">
+          <div class="cagr-label">Annualized Return</div>
+          <div class="cagr-value" id="medCagr">--</div>
+        </div>
+      </div>
+    </div>
+    <div class="stats-grid" id="inflationGrid" style="display:none;">
+      <div class="stat-card">
+        <div class="stat-label">Avg. Inflation over Period<span class="help-tip">?<span class="tip-text">The average cumulative CPI change across all scenarios for this holding period. Shows how much purchasing power typically eroded (or grew) over the timeframe.</span></span></div>
+        <div class="stat-value" id="avgInflation">--</div>
+        <div class="cagr-sub visible" id="inflationCagrCard">
+          <div class="cagr-label">Annualized</div>
+          <div class="cagr-value" id="avgInflationCagr">--</div>
+        </div>
+      </div>
+    </div>
+    <div class="winloss-bar-container">
+      <div class="stat-label">Positive vs Negative Outcomes<span class="help-tip">?<span class="tip-text">The percentage of all historical rolling periods that ended with a gain vs. a loss. Zero return is counted as positive.</span></span></div>
+      <div class="winloss-bar">
+        <div class="win-segment" id="winBar" style="width:50%">--</div>
+        <div class="loss-segment" id="lossBar" style="width:50%">--</div>
+      </div>
+      <div class="winloss-labels">
+        <span id="winCount">-- positive</span>
+        <span id="lossCount">-- negative</span>
+      </div>
+    </div>
+    <div class="threshold-card">
+      <div class="stat-label" id="thresholdTitle">Scenarios Beating Target Return<span class="help-tip">?<span class="tip-text">Drag the slider to set a target return. Shows what percentage of historical scenarios beat that target over the selected holding period.</span></span></div>
+      <div class="threshold-controls">
+        <input type="range" id="thresholdSlider" min="-100" max="500" value="0" step="1" oninput="updateThreshold()">
+        <span class="threshold-value" id="thresholdLabel">0%</span>
+      </div>
+      <div class="winloss-bar">
+        <div class="win-segment" id="beatBar" style="width:50%">--</div>
+        <div class="loss-segment" id="missBar" style="width:50%">--</div>
+      </div>
+      <div class="winloss-labels">
+        <span id="beatCount">-- beat target</span>
+        <span id="missCount">-- missed target</span>
+      </div>
+    </div>
+    <div class="extremes-grid">
+      <div class="extreme-card">
+        <h4>Worst Scenario</h4>
+        <div class="extreme-return" id="worstReturn">--</div>
+        <div class="extreme-dates" id="worstDates">--</div>
+        <div class="extreme-prices" id="worstPrices">--</div>
+      </div>
+      <div class="extreme-card">
+        <h4>Best Scenario</h4>
+        <div class="extreme-return" id="bestReturn">--</div>
+        <div class="extreme-dates" id="bestDates">--</div>
+        <div class="extreme-prices" id="bestPrices">--</div>
+      </div>
+    </div>
+    <div class="histogram-section">
+      <h3>Return Distribution<span class="help-tip">?<span class="tip-text">Shows how returns are distributed across all scenarios. Green bars are positive returns, red bars are negative. The dashed line marks 0%. Hover over bars for details.</span></span></h3>
+      <div class="histogram-canvas-container">
+        <canvas id="histogramCanvas"></canvas>
+        <div class="hist-tooltip" id="histTooltip"></div>
+      </div>
+    </div>
+    <div class="percentile-section">
+      <h3>Return Percentiles<span class="help-tip">?<span class="tip-text">Shows the return at each percentile. For example, the 10th percentile means 10% of scenarios had a worse return than this value.</span></span></h3>
+      <table class="percentile-table">
+        <thead><tr><th>Percentile</th><th>Return</th></tr></thead>
+        <tbody id="percentileBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+<div class="footer">Data: Yahoo Finance (^GSPC / ^SP500TR) &middot; BLS CPI-U &middot; Shiller dividend data (pre-1988, quarterly reinvestment) &middot; Daily closing prices &middot; Not financial advice</div>
+<script>
+// === EMBEDDED PRICE DATA: [epochDays, closePrice] ===
+var RAW_PRICE_DATA =

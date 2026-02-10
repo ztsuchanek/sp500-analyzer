@@ -1,0 +1,704 @@
+;
+
+// === PARSE EMBEDDED DATA ===
+function parseRawData(raw) {
+  // #21 Data validation: filter out NaN, zero, duplicates
+  var seen = {};
+  var arr = [];
+  for (var i = 0; i < raw.length; i++) {
+    var d = raw[i];
+    if (!d || d.length < 2) continue;
+    var epochDay = d[0];
+    var close = d[1];
+    if (typeof epochDay !== 'number' || typeof close !== 'number') continue;
+    if (isNaN(epochDay) || isNaN(close) || close <= 0) continue;
+    var ms = epochDay * 86400000;
+    var dt = new Date(ms);
+    var ds = dt.getUTCFullYear() + '-' + String(dt.getUTCMonth()+1).padStart(2,'0') + '-' + String(dt.getUTCDate()).padStart(2,'0');
+    if (seen[ds]) continue; // skip duplicate dates
+    seen[ds] = true;
+    arr.push({ date: ds, ts: ms, epochDay: epochDay, close: close });
+  }
+  arr.sort(function(a,b) { return a.ts - b.ts; });
+  return arr;
+}
+
+var SP_PRICE = parseRawData(RAW_PRICE_DATA);
+var SP_TR = parseRawData(RAW_TR_DATA);
+var SP_DATA = SP_PRICE; // default to price-only
+
+// #2 Parse CPI data into lookup
+var CPI_LOOKUP = {};
+(function() {
+  if (typeof RAW_CPI_DATA === 'object' && RAW_CPI_DATA !== null) {
+    var keys = Object.keys(RAW_CPI_DATA);
+    for (var i = 0; i < keys.length; i++) {
+      var v = RAW_CPI_DATA[keys[i]];
+      if (typeof v === 'number' && !isNaN(v) && v > 0) {
+        CPI_LOOKUP[keys[i]] = v;
+      }
+    }
+  }
+})();
+
+// Cache last computed returns for resize-only redraws
+var _lastReturns = null;
+// Cache sorted CAGR values for threshold slider
+var _lastCAGRs = null;
+// Cache histogram geometry for mouse hover
+var _histogramMeta = null;
+// Cache base histogram image for hover overlay
+var _histogramImage = null;
+
+// === DATE FORMATTER ===
+var MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+function ordinal(d) {
+  if (d > 3 && d < 21) return d + 'th';
+  switch (d % 10) { case 1: return d + 'st'; case 2: return d + 'nd'; case 3: return d + 'rd'; default: return d + 'th'; }
+}
+function fmtDate(dateStr) {
+  // dateStr is "YYYY-MM-DD"
+  var parts = dateStr.split('-');
+  var y = parseInt(parts[0]), m = parseInt(parts[1]) - 1, d = parseInt(parts[2]);
+  return MONTH_NAMES[m] + ' ' + ordinal(d) + ', ' + y;
+}
+
+// === CPI HELPER ===
+function getCPI(dateStr) {
+  // dateStr is "YYYY-MM-DD", we need "YYYY-MM"
+  var key = dateStr.substring(0, 7);
+  if (CPI_LOOKUP[key]) return CPI_LOOKUP[key];
+  // Try adjacent months if exact month missing
+  var parts = key.split('-');
+  var y = parseInt(parts[0]), m = parseInt(parts[1]);
+  // Try previous month
+  var pm = m - 1, py = y;
+  if (pm < 1) { pm = 12; py--; }
+  var prevKey = py + '-' + String(pm).padStart(2, '0');
+  if (CPI_LOOKUP[prevKey]) return CPI_LOOKUP[prevKey];
+  // Try next month
+  var nm = m + 1, ny = y;
+  if (nm > 12) { nm = 1; ny++; }
+  var nextKey = ny + '-' + String(nm).padStart(2, '0');
+  if (CPI_LOOKUP[nextKey]) return CPI_LOOKUP[nextKey];
+  return null;
+}
+
+// === PERSIST STATE ===
+var STORAGE_KEY = 'sp500analyzer_state';
+
+function saveState() {
+  try {
+    var state = {
+      value: document.getElementById('daysInput').value,
+      unit: currentUnit,
+      dividends: document.getElementById('dividendToggle').checked,
+      inflation: document.getElementById('inflationToggle').checked
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch(e) { /* localStorage unavailable */ }
+}
+
+function restoreState() {
+  try {
+    var raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return;
+    var state = JSON.parse(raw);
+    if (state.unit) {
+      currentUnit = state.unit;
+      document.querySelectorAll('.unit-btn').forEach(function(btn) {
+        btn.classList.remove('active');
+        if (btn.getAttribute('data-unit') === state.unit) btn.classList.add('active');
+      });
+    }
+    if (state.value) document.getElementById('daysInput').value = state.value;
+    if (state.dividends !== undefined) document.getElementById('dividendToggle').checked = state.dividends;
+    if (state.inflation !== undefined) document.getElementById('inflationToggle').checked = state.inflation;
+  } catch(e) { /* localStorage unavailable or corrupt */ }
+}
+
+// #26 Header description with integrated stats
+(function() {
+  var first = SP_PRICE[0], last = SP_PRICE[SP_PRICE.length-1];
+  var cpiCount = Object.keys(CPI_LOOKUP).length;
+  var years = Math.round((last.ts - first.ts) / (365.25 * 86400000));
+  var desc = 'Pick any holding period and see how every possible S&P 500 investment performed across ' +
+    SP_PRICE.length.toLocaleString() + ' historical scenarios and ' + years + ' years of market history, ' +
+    'from ' + fmtDate(first.date) + ' through ' + fmtDate(last.date) + '. ' +
+    'Include dividends or adjust for inflation to compare real and nominal returns. ' +
+    'Every scenario shown is a real historical outcome.';
+  document.getElementById('headerDesc').textContent = desc;
+  restoreState();
+  runAnalysis();
+})();
+
+// === ANALYSIS ENGINE ===
+var currentUnit = 'years';
+
+function getCalendarDays() {
+  var val = parseFloat(document.getElementById('daysInput').value);
+  if (!val || val <= 0) return 0;
+  if (currentUnit === 'weeks') return Math.round(val * 7);
+  if (currentUnit === 'months') return Math.round(val * 30.44);
+  if (currentUnit === 'years') return Math.round(val * 365.25);
+  return Math.round(val);
+}
+
+function runAnalysis() {
+  var useDividends = document.getElementById('dividendToggle').checked;
+  var useInflation = document.getElementById('inflationToggle').checked;
+  SP_DATA = useDividends ? SP_TR : SP_PRICE;
+
+  // Hide warning card when starting new analysis
+  document.getElementById('warningCard').classList.remove('visible');
+
+  var days = getCalendarDays();
+  if (!days || days < 1 || SP_DATA.length === 0) return;
+
+  var calendarMs = days * 86400000;
+  var scenarios = [];
+
+  for (var i = 0; i < SP_DATA.length; i++) {
+    var targetTs = SP_DATA[i].ts + calendarMs;
+    var lo = i + 1, hi = SP_DATA.length - 1;
+    if (lo > hi) break;
+    if (targetTs > SP_DATA[SP_DATA.length - 1].ts + 4 * 86400000) break;
+
+    while (lo < hi) {
+      var mid = (lo + hi) >> 1;
+      if (SP_DATA[mid].ts < targetTs) lo = mid + 1;
+      else hi = mid;
+    }
+
+    var endIdx = lo;
+    if (lo > 0 && lo < SP_DATA.length) {
+      if (Math.abs(SP_DATA[lo-1].ts - targetTs) < Math.abs(SP_DATA[lo].ts - targetTs)) endIdx = lo - 1;
+    }
+    if (endIdx >= SP_DATA.length) endIdx = SP_DATA.length - 1;
+    if (endIdx <= i) continue;
+
+    var daysDiff = Math.abs(SP_DATA[endIdx].ts - targetTs) / 86400000;
+    if (daysDiff > 7) continue;
+
+    var startPrice = SP_DATA[i].close;
+    var endPrice = SP_DATA[endIdx].close;
+    // #21 Validate prices
+    if (startPrice <= 0 || endPrice <= 0 || isNaN(startPrice) || isNaN(endPrice)) continue;
+
+    var ret = ((endPrice - startPrice) / startPrice) * 100;
+
+    // #2 Inflation adjustment
+    if (useInflation) {
+      var startCPI = getCPI(SP_DATA[i].date);
+      var endCPI = getCPI(SP_DATA[endIdx].date);
+      if (startCPI && endCPI && startCPI > 0) {
+        // Real return = nominal return adjusted by CPI ratio
+        var nominalFactor = endPrice / startPrice;
+        var realFactor = nominalFactor * (startCPI / endCPI);
+        ret = (realFactor - 1) * 100;
+      }
+    }
+
+    // #9 Actual elapsed days for annualization
+    var actualElapsedMs = SP_DATA[endIdx].ts - SP_DATA[i].ts;
+    var actualElapsedDays = actualElapsedMs / 86400000;
+
+    scenarios.push({
+      startIdx: i, endIdx: endIdx,
+      startDate: SP_DATA[i].date, endDate: SP_DATA[endIdx].date,
+      startPrice: startPrice, endPrice: endPrice, ret: ret,
+      actualDays: actualElapsedDays
+    });
+  }
+
+  saveState();
+
+  if (scenarios.length === 0) {
+    var years = (days / 365.25).toFixed(1);
+    document.getElementById('warningTitle').textContent = 'Insufficient Data';
+    document.getElementById('warningText').textContent =
+      'No valid scenarios found for a ' + years + '-year holding period. ' +
+      'The dataset spans ~97 years (1928\u20132026), so holding periods must be shorter than the full range. Try a shorter period.';
+    document.getElementById('warningCard').classList.add('visible');
+    document.getElementById('results').classList.remove('visible');
+    _lastReturns = null;
+    return;
+  }
+  displayResults(scenarios, days);
+}
+
+// === DISPLAY ===
+function displayResults(scenarios, days) {
+  var resultsEl = document.getElementById('results');
+  resultsEl.classList.add('visible');
+
+  var returns = scenarios.map(function(s) { return s.ret; });
+  returns.sort(function(a,b) { return a - b; });
+
+  // Cache returns for resize redraws
+  _lastReturns = returns;
+
+  var n = returns.length;
+  var sum = 0; for (var i = 0; i < n; i++) sum += returns[i];
+  var mean = sum / n;
+  var median = n % 2 === 0 ? (returns[n/2-1] + returns[n/2]) / 2 : returns[Math.floor(n/2)];
+  var positiveCount = 0; for (var i = 0; i < n; i++) if (returns[i] > 0) positiveCount++;
+  var negativeCount = n - positiveCount;
+  var pctPositive = (positiveCount / n) * 100;
+  var pctNegative = (negativeCount / n) * 100;
+
+  var bestScenario = scenarios[0], worstScenario = scenarios[0];
+  for (var i = 1; i < scenarios.length; i++) {
+    if (scenarios[i].ret > bestScenario.ret) bestScenario = scenarios[i];
+    if (scenarios[i].ret < worstScenario.ret) worstScenario = scenarios[i];
+  }
+
+  var periodLabel;
+  if (days < 30) periodLabel = days + '-Day';
+  else if (days < 365) periodLabel = Math.round(days / 30) + '-Month';
+  else periodLabel = (days / 365).toFixed(1).replace('.0', '') + '-Year';
+
+  var useDividends = document.getElementById('dividendToggle').checked;
+  var useInflation = document.getElementById('inflationToggle').checked;
+  var suffix = '';
+  if (useDividends && useInflation) suffix = ' (Real Total Return)';
+  else if (useDividends) suffix = ' (w/ Dividends)';
+  else if (useInflation) suffix = ' (Inflation-Adjusted)';
+  else suffix = ' (Price Only)';
+  document.getElementById('resultsTitle').textContent = periodLabel + ' Holding Period Analysis' + suffix;
+  document.getElementById('scenarioCount').textContent =
+    n.toLocaleString() + ' scenarios analyzed (' + fmtDate(scenarios[0].startDate) + ' \u2013 ' + fmtDate(scenarios[scenarios.length-1].endDate) + ')';
+
+  function fmt(v) { return (v >= 0 ? '+' : '') + v.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) + '%'; }
+  function fmtNoPlus(v) { return v.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) + '%'; }
+  function cls(v) { return v >= 0 ? 'positive' : 'negative'; }
+
+  // #9 Annualize using actual elapsed days (averaged across scenarios)
+  function annualize(totalReturn, calDays) {
+    var years = calDays / 365.25;
+    if (years <= 0) return null;
+    var factor = 1 + totalReturn / 100;
+    if (factor <= 0) return null;
+    return (Math.pow(factor, 1 / years) - 1) * 100;
+  }
+
+  // Compute average actual elapsed days for CAGR
+  var sumActualDays = 0;
+  for (var i = 0; i < scenarios.length; i++) sumActualDays += scenarios[i].actualDays;
+  var avgActualDays = sumActualDays / scenarios.length;
+
+  var avgEl = document.getElementById('avgReturn');
+  avgEl.textContent = fmt(mean);
+  avgEl.className = 'stat-value ' + cls(mean);
+  var avgAnn = annualize(mean, avgActualDays);
+  var avgCagrCard = document.getElementById('avgCagrCard');
+  var avgCagrEl = document.getElementById('avgCagr');
+  if (avgAnn !== null) {
+    avgCagrEl.textContent = fmt(avgAnn);
+    avgCagrEl.className = 'cagr-value ' + cls(avgAnn);
+    avgCagrCard.classList.add('visible');
+  } else {
+    avgCagrCard.classList.remove('visible');
+  }
+
+  var medEl = document.getElementById('medReturn');
+  medEl.textContent = fmt(median);
+  medEl.className = 'stat-value ' + cls(median);
+  var medAnn = annualize(median, avgActualDays);
+  var medCagrCard = document.getElementById('medCagrCard');
+  var medCagrEl = document.getElementById('medCagr');
+  if (medAnn !== null) {
+    medCagrEl.textContent = fmt(medAnn);
+    medCagrEl.className = 'cagr-value ' + cls(medAnn);
+    medCagrCard.classList.add('visible');
+  } else {
+    medCagrCard.classList.remove('visible');
+  }
+
+  document.getElementById('winBar').style.width = pctPositive + '%';
+  document.getElementById('winBar').textContent = pctPositive >= 5 ? pctPositive.toFixed(1) + '%' : '';
+  document.getElementById('lossBar').style.width = pctNegative + '%';
+  document.getElementById('lossBar').textContent = pctNegative >= 5 ? pctNegative.toFixed(1) + '%' : '';
+  document.getElementById('winCount').textContent = positiveCount.toLocaleString() + ' positive';
+  document.getElementById('lossCount').textContent = negativeCount.toLocaleString() + ' negative';
+
+  var bestEl = document.getElementById('bestReturn');
+  bestEl.textContent = fmt(bestScenario.ret);
+  bestEl.className = 'extreme-return ' + cls(bestScenario.ret);
+  document.getElementById('bestDates').textContent = fmtDate(bestScenario.startDate) + ' \u2192 ' + fmtDate(bestScenario.endDate);
+  document.getElementById('bestPrices').textContent = '$' + bestScenario.startPrice.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) + ' \u2192 $' + bestScenario.endPrice.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+
+  var worstEl = document.getElementById('worstReturn');
+  worstEl.textContent = fmt(worstScenario.ret);
+  worstEl.className = 'extreme-return ' + cls(worstScenario.ret);
+  document.getElementById('worstDates').textContent = fmtDate(worstScenario.startDate) + ' \u2192 ' + fmtDate(worstScenario.endDate);
+  document.getElementById('worstPrices').textContent = '$' + worstScenario.startPrice.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) + ' \u2192 $' + worstScenario.endPrice.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+
+  // === INFLATION CARD ===
+  var inflationGrid = document.getElementById('inflationGrid');
+  var cpiKeys = Object.keys(CPI_LOOKUP);
+  if (cpiKeys.length > 0) {
+    var inflSum = 0, inflCount = 0;
+    for (var i = 0; i < scenarios.length; i++) {
+      var sCPI = getCPI(scenarios[i].startDate);
+      var eCPI = getCPI(scenarios[i].endDate);
+      if (sCPI && eCPI && sCPI > 0) {
+        inflSum += ((eCPI - sCPI) / sCPI) * 100;
+        inflCount++;
+      }
+    }
+    if (inflCount > 0) {
+      var avgInfl = inflSum / inflCount;
+      document.getElementById('avgInflation').textContent = fmtNoPlus(avgInfl);
+      document.getElementById('avgInflation').className = 'stat-value ' + (avgInfl >= 0 ? 'negative' : 'positive'); // inflation up = bad
+      var inflAnn = annualize(avgInfl, avgActualDays);
+      if (inflAnn !== null) {
+        document.getElementById('avgInflationCagr').textContent = fmtNoPlus(inflAnn) + '/yr';
+        document.getElementById('avgInflationCagr').className = 'cagr-value ' + (inflAnn >= 0 ? 'negative' : 'positive');
+        document.getElementById('inflationCagrCard').classList.add('visible');
+      }
+      inflationGrid.style.display = '';
+    } else {
+      inflationGrid.style.display = 'none';
+    }
+  } else {
+    inflationGrid.style.display = 'none';
+  }
+
+  var percentiles = [1, 5, 10, 25, 50, 75, 90, 95, 99];
+  var tbody = document.getElementById('percentileBody');
+  tbody.innerHTML = '';
+  for (var p = 0; p < percentiles.length; p++) {
+    var pct = percentiles[p];
+    var idx = Math.min(Math.floor((pct / 100) * n), n - 1);
+    var val = returns[idx];
+    var tr = document.createElement('tr');
+    tr.innerHTML = '<td>' + pct + 'th percentile</td><td class="' + cls(val) + '">' + fmt(val) + '</td>';
+    tbody.appendChild(tr);
+  }
+
+  drawHistogram(returns);
+
+  // Build sorted CAGR array for threshold slider
+  var cagrs = [];
+  for (var i = 0; i < returns.length; i++) {
+    var c = annualize(returns[i], avgActualDays);
+    if (c !== null) cagrs.push(c);
+  }
+  cagrs.sort(function(a,b) { return a - b; });
+  _lastCAGRs = cagrs;
+
+  // Update threshold slider range and title (centered at zero, CAGR-based)
+  var slider = document.getElementById('thresholdSlider');
+  if (cagrs.length > 0) {
+    var cagrMin = Math.floor(cagrs[0]);
+    var cagrMax = Math.ceil(cagrs[cagrs.length - 1]);
+    var absMax = Math.max(Math.abs(cagrMin), Math.abs(cagrMax));
+    slider.min = -absMax;
+    slider.max = absMax;
+  }
+  slider.step = '0.1';
+  slider.value = 0;
+  document.getElementById('thresholdLabel').textContent = '+0.0%';
+  document.getElementById('thresholdTitle').innerHTML =
+    'Scenarios Beating Annualized Target over ' + periodLabel +
+    '<span class="help-tip">?<span class="tip-text">Drag the slider to set a target annualized (CAGR) return. Shows what percentage of historical scenarios beat that annual return target over the selected holding period.</span></span>';
+  updateThreshold();
+
+}
+
+// === THRESHOLD SLIDER ===
+function updateThreshold() {
+  if (!_lastCAGRs || _lastCAGRs.length === 0) return;
+  var cagrs = _lastCAGRs;
+  var n = cagrs.length;
+  var slider = document.getElementById('thresholdSlider');
+  var target = parseFloat(slider.value);
+  var label = document.getElementById('thresholdLabel');
+  label.textContent = (target >= 0 ? '+' : '') + target.toFixed(1) + '%';
+  // Position label above the thumb
+  var min = parseFloat(slider.min), max = parseFloat(slider.max);
+  var pct = (max > min) ? (target - min) / (max - min) : 0.5;
+  // Account for thumb width (10px radius) pushing the track inward
+  var thumbHalf = 10;
+  var sliderW = slider.offsetWidth;
+  var px = thumbHalf + pct * (sliderW - 2 * thumbHalf);
+  // Clamp so label doesn't overflow card edges
+  var labelW = label.offsetWidth || 60;
+  px = Math.max(labelW / 2, Math.min(px, sliderW - labelW / 2));
+  label.style.left = px + 'px';
+
+  // Binary search for first CAGR index >= target
+  var lo = 0, hi = n;
+  while (lo < hi) {
+    var mid = (lo + hi) >> 1;
+    if (cagrs[mid] < target) lo = mid + 1;
+    else hi = mid;
+  }
+  var missCount = lo;
+  var beatCount = n - lo;
+  var pctBeat = (beatCount / n) * 100;
+  var pctMiss = (missCount / n) * 100;
+
+  document.getElementById('beatBar').style.width = pctBeat + '%';
+  document.getElementById('beatBar').textContent = pctBeat >= 5 ? pctBeat.toFixed(1) + '%' : '';
+  document.getElementById('missBar').style.width = pctMiss + '%';
+  document.getElementById('missBar').textContent = pctMiss >= 5 ? pctMiss.toFixed(1) + '%' : '';
+  document.getElementById('beatCount').textContent = beatCount.toLocaleString() + ' beat target';
+  document.getElementById('missCount').textContent = missCount.toLocaleString() + ' missed target';
+}
+
+// === HISTOGRAM ===
+function drawHistogram(returns) {
+  var canvas = document.getElementById('histogramCanvas');
+  var container = canvas.parentElement;
+  var dpr = window.devicePixelRatio || 1;
+  var rect = container.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  var ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  var W = rect.width, H = rect.height;
+  ctx.clearRect(0, 0, W, H);
+
+  var min = returns[0], max = returns[returns.length - 1];
+  var range = max - min;
+  if (range === 0) range = 1;
+  var binCount = Math.min(80, Math.max(20, Math.ceil(Math.sqrt(returns.length))));
+  var binWidth = range / binCount;
+
+  var bins = []; var binEdges = [];
+  for (var i = 0; i <= binCount; i++) binEdges.push(min + i * binWidth);
+  for (var i = 0; i < binCount; i++) bins.push(0);
+  for (var i = 0; i < returns.length; i++) {
+    var idx = Math.floor((returns[i] - min) / binWidth);
+    if (idx >= binCount) idx = binCount - 1;
+    if (idx < 0) idx = 0;
+    bins[idx]++;
+  }
+
+  var maxBin = 0; for (var i = 0; i < bins.length; i++) if (bins[i] > maxBin) maxBin = bins[i];
+
+  var padLeft = 55, padRight = 20, padTop = 10, padBottom = 40;
+  var chartW = W - padLeft - padRight, chartH = H - padTop - padBottom;
+
+  // #13 Save histogram geometry for mouse hover
+  _histogramMeta = {
+    padLeft: padLeft, padRight: padRight, padTop: padTop, padBottom: padBottom,
+    chartW: chartW, chartH: chartH, W: W, H: H,
+    binCount: binCount, binEdges: binEdges, bins: bins, maxBin: maxBin,
+    barW: chartW / binCount, totalCount: returns.length
+  };
+
+  ctx.strokeStyle = '#2e3344'; ctx.lineWidth = 0.5;
+  ctx.font = '11px -apple-system, sans-serif';
+  ctx.fillStyle = '#8b8fa3'; ctx.textAlign = 'right';
+  var yTicks = 5;
+  for (var i = 0; i <= yTicks; i++) {
+    var y = padTop + chartH - (i / yTicks) * chartH;
+    var val = Math.round((i / yTicks) * maxBin);
+    ctx.beginPath(); ctx.moveTo(padLeft, y); ctx.lineTo(W - padRight, y); ctx.stroke();
+    ctx.fillText(val.toLocaleString(), padLeft - 6, y + 4);
+  }
+
+  var barW = chartW / binCount;
+  for (var i = 0; i < binCount; i++) {
+    var barH = (bins[i] / maxBin) * chartH;
+    var x = padLeft + i * barW;
+    var y = padTop + chartH - barH;
+    if (binEdges[i + 1] <= 0) ctx.fillStyle = 'rgba(248, 113, 113, 0.7)';
+    else if (binEdges[i] >= 0) ctx.fillStyle = 'rgba(52, 211, 153, 0.7)';
+    else ctx.fillStyle = 'rgba(79, 143, 247, 0.7)';
+    ctx.fillRect(x + 0.5, y, Math.max(barW - 1, 1), barH);
+  }
+
+  if (min < 0 && max > 0) {
+    var zeroX = padLeft + ((0 - min) / range) * chartW;
+    ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]);
+    ctx.beginPath(); ctx.moveTo(zeroX, padTop); ctx.lineTo(zeroX, padTop + chartH); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#fbbf24'; ctx.font = '10px -apple-system, sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('0%', zeroX, padTop + chartH + 16);
+  }
+
+  // X-axis labels anchored on 0% with even spacing outward
+  ctx.fillStyle = '#8b8fa3'; ctx.font = '11px -apple-system, sans-serif'; ctx.textAlign = 'center';
+  var labelInterval = range / 8;
+  // Round interval to a nice number
+  var mag = Math.pow(10, Math.floor(Math.log10(labelInterval)));
+  var niceSteps = [1, 2, 2.5, 5, 10];
+  var niceLabelStep = niceSteps[niceSteps.length - 1] * mag;
+  for (var s = 0; s < niceSteps.length; s++) {
+    if (niceSteps[s] * mag >= labelInterval) { niceLabelStep = niceSteps[s] * mag; break; }
+  }
+  // Draw labels from 0% outward in both directions (skip 0% itself — yellow label handles it)
+  for (var v = -niceLabelStep; v >= min; v -= niceLabelStep) {
+    var lx = padLeft + ((v - min) / range) * chartW;
+    if (lx >= padLeft - 5 && lx <= W - padRight + 5) ctx.fillText(v.toFixed(0) + '%', lx, padTop + chartH + 16);
+  }
+  for (var v = niceLabelStep; v <= max; v += niceLabelStep) {
+    var lx = padLeft + ((v - min) / range) * chartW;
+    if (lx >= padLeft - 5 && lx <= W - padRight + 5) ctx.fillText(v.toFixed(0) + '%', lx, padTop + chartH + 16);
+  }
+
+  ctx.fillStyle = '#8b8fa3'; ctx.font = '11px -apple-system, sans-serif'; ctx.textAlign = 'center';
+  ctx.fillText('Total Return (%)', padLeft + chartW / 2, H - 2);
+  ctx.save(); ctx.translate(12, padTop + chartH / 2); ctx.rotate(-Math.PI / 2);
+  ctx.fillText('Frequency', 0, 0); ctx.restore();
+
+  // Save base histogram image for hover overlay
+  _histogramImage = ctx.getImageData(0, 0, canvas.width, canvas.height);
+}
+
+// #13 Interactive histogram: mouse hover tooltip + bar highlight
+(function() {
+  var canvas = document.getElementById('histogramCanvas');
+  var tooltip = document.getElementById('histTooltip');
+  var lastBin = -1;
+
+  function clearHighlight() {
+    if (lastBin !== -1 && _histogramImage) {
+      var ctx = canvas.getContext('2d');
+      ctx.putImageData(_histogramImage, 0, 0);
+      // Reset transform so drawHistogram's stale scale(dpr) doesn't compound
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.scale(window.devicePixelRatio || 1, window.devicePixelRatio || 1);
+      lastBin = -1;
+    }
+  }
+
+  canvas.addEventListener('mousemove', function(e) {
+    if (!_histogramMeta || !_histogramImage) return;
+    var m = _histogramMeta;
+    var rect = canvas.getBoundingClientRect();
+    var mx = e.clientX - rect.left;
+    var my = e.clientY - rect.top;
+
+    // Check if mouse is within chart area
+    if (mx < m.padLeft || mx > m.W - m.padRight || my < m.padTop || my > m.padTop + m.chartH) {
+      clearHighlight();
+      tooltip.classList.remove('visible');
+      return;
+    }
+
+    var binIdx = Math.floor((mx - m.padLeft) / m.barW);
+    if (binIdx < 0 || binIdx >= m.binCount) {
+      clearHighlight();
+      tooltip.classList.remove('visible');
+      return;
+    }
+
+    // Only redraw if we moved to a different bar
+    if (binIdx !== lastBin) {
+      lastBin = binIdx;
+      var ctx = canvas.getContext('2d');
+      var dpr = window.devicePixelRatio || 1;
+      // Restore the clean base image (gridlines, axes, labels, all bars)
+      ctx.putImageData(_histogramImage, 0, 0);
+      // Reset transform (drawHistogram leaves scale(dpr) active) then re-apply
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.save();
+      ctx.scale(dpr, dpr);
+      // Dim each bar individually (skip the hovered one) — preserves grid/axes
+      for (var b = 0; b < m.binCount; b++) {
+        if (b === binIdx) continue;
+        var bH = (m.bins[b] / m.maxBin) * m.chartH;
+        if (bH < 1) continue;
+        var bx = m.padLeft + b * m.barW;
+        var by = m.padTop + m.chartH - bH;
+        ctx.fillStyle = 'rgba(15, 17, 23, 0.55)';
+        ctx.fillRect(bx + 0.5, by, Math.max(m.barW - 1, 1), bH);
+      }
+      // White glow border on hovered bar
+      var barH = (m.bins[binIdx] / m.maxBin) * m.chartH;
+      var x = m.padLeft + binIdx * m.barW;
+      var y = m.padTop + m.chartH - barH;
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(x + 0.5, y, Math.max(m.barW - 1, 1), barH);
+      ctx.restore();
+    }
+
+    var count = m.bins[binIdx];
+    var lo = m.binEdges[binIdx];
+    var hi = m.binEdges[binIdx + 1];
+    var pct = ((count / m.totalCount) * 100).toFixed(1);
+
+    tooltip.innerHTML =
+      '<strong>' + lo.toFixed(1) + '% to ' + hi.toFixed(1) + '%</strong><br>' +
+      count.toLocaleString() + ' scenarios (' + pct + '%)';
+    tooltip.classList.add('visible');
+
+    // Position tooltip centered above the hovered bar
+    var barCenterX = m.padLeft + (binIdx + 0.5) * m.barW;
+    var barTopY = m.padTop + m.chartH - (m.bins[binIdx] / m.maxBin) * m.chartH;
+    var tx = barCenterX - 90;
+    var ty = barTopY - 52;
+    if (tx < 4) tx = 4;
+    if (tx + 180 > rect.width - 4) tx = rect.width - 184;
+    if (ty < 0) ty = barTopY + 8;
+    tooltip.style.left = tx + 'px';
+    tooltip.style.top = ty + 'px';
+  });
+
+  canvas.addEventListener('mouseleave', function() {
+    clearHighlight();
+    tooltip.classList.remove('visible');
+  });
+})();
+
+// === UI HELPERS ===
+function setUnit(unit) {
+  var oldDays = getCalendarDays();
+  currentUnit = unit;
+  document.querySelectorAll('.unit-btn').forEach(function(btn) {
+    btn.classList.remove('active');
+    if (btn.getAttribute('data-unit') === unit) btn.classList.add('active');
+  });
+  if (oldDays > 0) {
+    var newVal;
+    if (unit === 'weeks') newVal = (oldDays / 7).toFixed(1).replace(/\.0$/, '');
+    else if (unit === 'months') newVal = (oldDays / 30.44).toFixed(1).replace(/\.0$/, '');
+    else if (unit === 'years') newVal = (oldDays / 365.25).toFixed(2).replace(/\.?0+$/, '');
+    else newVal = oldDays;
+    document.getElementById('daysInput').value = newVal;
+  }
+  saveState();
+}
+
+function setDays(d) {
+  if (currentUnit === 'weeks') {
+    document.getElementById('daysInput').value = (d / 7).toFixed(1).replace(/\.0$/, '');
+  } else if (currentUnit === 'months') {
+    document.getElementById('daysInput').value = (d / 30.44).toFixed(1).replace(/\.0$/, '');
+  } else if (currentUnit === 'years') {
+    document.getElementById('daysInput').value = (d / 365.25).toFixed(2).replace(/\.?0+$/, '');
+  } else {
+    document.getElementById('daysInput').value = d;
+  }
+  runAnalysis();
+}
+
+var _debounceTimer;
+document.getElementById('daysInput').addEventListener('input', function() {
+  clearTimeout(_debounceTimer);
+  _debounceTimer = setTimeout(runAnalysis, 400);
+});
+
+document.getElementById('daysInput').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') { clearTimeout(_debounceTimer); runAnalysis(); }
+});
+
+// Resize only redraws the histogram canvas, never recomputes analysis
+var _resizeRaf = 0;
+window.addEventListener('resize', function() {
+  if (_lastReturns && document.getElementById('results').classList.contains('visible')) {
+    cancelAnimationFrame(_resizeRaf);
+    _resizeRaf = requestAnimationFrame(function() {
+      drawHistogram(_lastReturns);
+    });
+  }
+});
+</script>
+</body>
+</html>

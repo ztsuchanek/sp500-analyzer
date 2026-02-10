@@ -1,0 +1,69 @@
+name: Update S&P 500 Data
+
+on:
+  schedule:
+    # Every Saturday at 10:00 UTC (5:00 AM ET) — after Friday market close
+    - cron: '0 10 * * 6'
+  workflow_dispatch:
+    # Manual trigger from GitHub Actions tab
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install yfinance
+
+      - name: Run update script
+        env:
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+        run: |
+          python scripts/update_data.py || EXIT_CODE=$?
+          # Exit code 2 = no new data (not an error)
+          if [ "${EXIT_CODE:-0}" -eq 2 ]; then
+            echo "No new data found. Skipping commit."
+            echo "DATA_CHANGED=false" >> $GITHUB_ENV
+          elif [ "${EXIT_CODE:-0}" -ne 0 ]; then
+            echo "Script failed with exit code ${EXIT_CODE}"
+            exit ${EXIT_CODE}
+          else
+            echo "DATA_CHANGED=true" >> $GITHUB_ENV
+          fi
+
+      - name: Commit and push if data changed
+        if: env.DATA_CHANGED == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/ sp500-analyzer.html
+
+          # Build commit message with date range
+          LAST_DATE=$(python -c "
+          import json
+          from datetime import datetime, timedelta, timezone
+          d = json.load(open('data/sp500_price.json'))
+          ed = d[-1][0]
+          dt = datetime(1970,1,1,tzinfo=timezone.utc) + timedelta(days=ed)
+          print(dt.strftime('%b %d, %Y'))
+          ")
+
+          git commit -m "Update data through ${LAST_DATE}
+
+          Automated weekly data update via GitHub Actions.
+
+          Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
+
+          git push

@@ -1,0 +1,16 @@
+# Other projects in this folder
+retirement-planner.html
+project-library.html
+energy-analytics/
+
+# Claude Code
+.claude/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.pyc
+.venv/
