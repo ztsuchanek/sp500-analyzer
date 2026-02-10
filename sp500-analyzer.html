@@ -611,8 +611,7 @@ function restoreState() {
   var first = SP_PRICE[0], last = SP_PRICE[SP_PRICE.length-1];
   var cpiCount = Object.keys(CPI_LOOKUP).length;
   var years = Math.round((last.ts - first.ts) / (365.25 * 86400000));
-  var desc = 'Pick any holding period and see how every possible S&P 500 investment performed \u2014 ' +
-    'across ' + SP_PRICE.length.toLocaleString() + ' trading days and ' + years + ' years of history, ' +
+  var desc = 'Pick any holding period and see how every possible S&P 500 investment performed across ' + SP_PRICE.length.toLocaleString() + ' trading days and ' + years + ' years of history, ' +
     'from ' + fmtDate(first.date) + ' through ' + fmtDate(last.date) + '. ' +
     'Every crash, rally, and sideways market included.';
   document.getElementById('headerDesc').textContent = desc;
