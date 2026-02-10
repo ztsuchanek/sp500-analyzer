@@ -615,8 +615,7 @@ function restoreState() {
     SP_PRICE.length.toLocaleString() + ' historical scenarios and ' + years + ' years of market history, ' +
     'from ' + fmtDate(first.date) + ' through ' + fmtDate(last.date) + '. ' +
     'Include dividends or adjust for inflation to compare real and nominal returns. ' +
-    'Every scenario shown is a real historical outcome. ' +
-    'Try 1 year, 10 years, or 30 to see how holding longer shifts the odds.';
+    'Every scenario shown is a real historical outcome.';
   document.getElementById('headerDesc').textContent = desc;
   restoreState();
   runAnalysis();
